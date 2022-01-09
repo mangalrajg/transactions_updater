@@ -1,7 +1,6 @@
 from __future__ import print_function
 
 import os.path
-import pandas as pd
 import numpy as np
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -26,7 +25,7 @@ def create_service():
     # time.
     if os.path.exists('token.json'):
         creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    # If there are no (valid) credentials available, let the user log in.
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
@@ -44,16 +43,12 @@ def create_service():
         print(err)
 
 def compare_row(existing_row, new_row):
-    # if Date, Type and Ticker matches
     if existing_row[0] == new_row[0] and existing_row[1]==new_row[1] and existing_row[2] == new_row[2]:
+        # if Date, Type and Ticker matches
         existing_units=round(float(existing_row[3]),1)
         new_units = round(new_row[3],1)
         existing_price = round(float(existing_row[4].strip('$')),2)
         new_price = float(np.round(new_row[4],2))
-        if existing_row[0]=='2020-06-28' and existing_row[2]=='SCHK':# and existing_units != new_units and existing_price != new_price:
-            print(f"{existing_row} == {new_row}")
-            print(f"{existing_units} == {new_units} : {existing_units==new_units}")
-            print(f"{existing_price} == {new_price} : {abs(existing_price-new_price) <0.011}")
         return existing_units == new_units and abs(existing_price-new_price) <=0.011
     else:
         return False
@@ -76,14 +71,12 @@ chase_data['StockSplit']=1.0
 chase_data['Trade Date'] = chase_data['Trade Date'].dt.strftime('%Y-%m-%d')
 chase_data['Quantity'] = abs(chase_data['Quantity'])
 
-filtered = [row for row in chase_data.values.tolist() if data_contains(current_data,row)] 
-existing = [row for row in chase_data.values.tolist() if not data_contains(current_data,row)] 
+filtered = [row for row in chase_data.values.tolist() if data_contains(current_data, row)] 
+#existing = [row for row in chase_data.values.tolist() if not data_contains(current_data, row)] 
 if len(filtered) >0:
     print("rows to update")
     print(filtered)
-    ret = sheetInterface.append_values(SAMPLE_SPREADSHEET_ID,SAMPLE_RANGE_NAME, "USER_ENTERED", filtered)
+    ret = sheetInterface.append_values(SAMPLE_SPREADSHEET_ID, SAMPLE_RANGE_NAME, "USER_ENTERED", filtered)
     print(ret)
 else:
     print("no row to update")
-
-
