@@ -11,6 +11,6 @@ Class that parse chase transaction statement and extract trading + divident tran
 
 Driver script that
 - Get existing transactions from google sheets
-- Get Chase transactions from chase_converter.py
+- Get Chase transactions from bank statement (using chase_converter.py)
 - Reconsile and find new transactions in chase
 - Update Google sheets with new transactions data
