@@ -15,7 +15,7 @@ import chase_converter as chase
 #SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 # The ID and range of a sample spreadsheet.
-SAMPLE_SPREADSHEET_ID = '1R9qD53BIqgJU7es5pIl1CBd4s6_1i6OQQgFFUPk2YYg'
+SAMPLE_SPREADSHEET_ID = '1HQY1GVGGQCupDSks3AAqqsAbBhrsC7us_3Rdsxj1CFI'
 SAMPLE_RANGE_NAME = 'Transactions_OSV!A1:G'
 
 def create_service():
@@ -64,7 +64,7 @@ sheetInterface=xl.SpreadsheetSnippets(service)
 result = sheetInterface.get_values(SAMPLE_SPREADSHEET_ID,SAMPLE_RANGE_NAME)
 current_data=result.get('values', [])
 
-chase_data=chase.get_transactions('sample_transactions.csv')
+chase_data=chase.get_transactions('2020_transactions.csv')
 chase_data.drop('Amount USD', axis=1, inplace=True)
 chase_data['Fee']=0
 chase_data['StockSplit']=1.0
@@ -75,7 +75,7 @@ filtered = [row for row in chase_data.values.tolist() if data_contains(current_d
 #existing = [row for row in chase_data.values.tolist() if not data_contains(current_data, row)] 
 if len(filtered) >0:
     print("rows to update")
-    print(filtered)
+    print(*filtered, sep='\n')
     ret = sheetInterface.append_values(SAMPLE_SPREADSHEET_ID, SAMPLE_RANGE_NAME, "USER_ENTERED", filtered)
     print(ret)
 else:
