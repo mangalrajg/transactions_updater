@@ -9,7 +9,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 import spreadsheet_snippets as xl
-import empower_converter as empower
+import empower_qfx_converter as empower
 
 # If modifying these scopes, delete the file token.json.
 #SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
