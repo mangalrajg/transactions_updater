@@ -1,8 +1,10 @@
-import os, glob
-from ofxparse import OfxParser
-import pandas as pd
+import glob
+import os
 
-from empower.model import SecurityInfo, TransactionBuilder
+import pandas as pd
+from ofxparse import OfxParser
+
+from qfx_model import SecurityInfo, TransactionBuilder
 
 
 def rename_qfx(qfx_file):
@@ -13,6 +15,7 @@ def rename_qfx(qfx_file):
     new_file = f"{os.path.dirname(qfx_file)}\\{new_filename}.qfx"
     print(new_file)
     os.rename(qfx_file, new_file)
+
 
 def get_transactions(qfx_file):
     print(f"processing {qfx_file}")
@@ -27,15 +30,17 @@ def get_transactions(qfx_file):
         raw.append(transaction)
     return raw
 
-def get_all_transactions():
+
+def get_all_transactions(folder: str):
     t_all = []
-    for file in glob.glob(f"G:\My Drive\Bank\EmpowerRetirement\*.qfx"):
+    for file in glob.glob(f"{folder}\Empower.Download.qfx"):
         xtions = get_transactions(file)
         t_all.extend(xtions)
     return t_all
 
+
 if __name__ == "__main__":
-    all_t = get_all_transactions()
+    all_t = get_all_transactions(".")
     df = pd.DataFrame([t.to_dict() for t in all_t])
     df = df.sort_values(by=["trade_date", "ticker", "units"])
     df.to_csv("aa.csv", index=False)

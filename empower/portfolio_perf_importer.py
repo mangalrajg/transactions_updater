@@ -1,18 +1,7 @@
 import pandas as pd
-from typing import Optional
-from dataclasses import dataclass, asdict
 
-@dataclass
-class PortfolioPerformanceRow:
-    Date: str
-    Type: str
-    Value: float
-    Transaction_Currency: str
-    Shares: Optional[float] = None
-    ISIN: Optional[str] = ''
-    Ticker_Symbol: Optional[str] = ''
-    Security_Name: str = ''
-    Note: str = ''
+from model import PortfolioPerformanceRow, TransactionType
+
 
 class PortfolioPerformanceImporter:
     def __init__(self, csv_path='aa.csv'):
@@ -21,12 +10,11 @@ class PortfolioPerformanceImporter:
 
     def create_reinvest_buy(self, row):
         return PortfolioPerformanceRow(
-            Date=row['trade_date'],
-            Type='Buy',
+            Date=self.parse_trade_date(row['trade_date']),
+            Type=TransactionType.BUY,
             Value=row['total'],
             Transaction_Currency='USD',
             Shares=row['units'],
-            ISIN='',
             Ticker_Symbol=row.get('ticker', ''),
             Security_Name=row.get('security_name', ''),
             Note='Reinvested dividend'
@@ -34,12 +22,11 @@ class PortfolioPerformanceImporter:
 
     def create_reinvest_dividend(self, row):
         return PortfolioPerformanceRow(
-            Date=row['trade_date'],
-            Type='Dividend',
+            Date=self.parse_trade_date(row['trade_date']),
+            Type=TransactionType.DIVIDEND,
             Value=row['total'],
             Transaction_Currency='USD',
             Shares=None,
-            ISIN='',
             Ticker_Symbol=row.get('ticker', ''),
             Security_Name=row.get('security_name', ''),
             Note='Dividend payout for reinvestment'
@@ -47,12 +34,11 @@ class PortfolioPerformanceImporter:
 
     def transform_buymf(self, row):
         return PortfolioPerformanceRow(
-            Date=row['trade_date'],
-            Type='Buy',
+            Date=self.parse_trade_date(row['trade_date']),
+            Type=TransactionType.BUY,
             Value=row['total'],
             Transaction_Currency='USD',
             Shares=row['units'],
-            ISIN='',
             Ticker_Symbol=row.get('ticker', ''),
             Security_Name=row.get('security_name', ''),
             Note='Buy mutual fund'
@@ -60,15 +46,44 @@ class PortfolioPerformanceImporter:
 
     def create_inbound_transfer(self, row):
         return PortfolioPerformanceRow(
-            Date=row['trade_date'],
-            Type='Transfer (Inbound)',
+            Date=self.parse_trade_date(row['trade_date']),
+            Type=TransactionType.TRANSFER_INBOUND,
             Value=-1 * row['total'],
             Transaction_Currency='USD',
             Shares=None,
-            ISIN='',
             Ticker_Symbol='',
             Security_Name='',
             Note='Auto-generated for Buy mutual fund'
+        )
+
+    def transform_sellmf(self, row):
+        """
+        Create a PortfolioPerformanceRow for a mutual fund sale (sellmf).
+        """
+        return PortfolioPerformanceRow(
+            Date=self.parse_trade_date(row['trade_date']),
+            Type=TransactionType.SELL,
+            Value=row['total'],
+            Transaction_Currency='USD',
+            Shares=row['units'],
+            Ticker_Symbol=row.get('ticker', ''),
+            Security_Name=row.get('security_name', ''),
+            Note='Sell mutual fund'
+        )
+
+    def create_outbound_transfer(self, row):
+        """
+        Create a PortfolioPerformanceRow for an outbound transfer (after a sellmf).
+        """
+        return PortfolioPerformanceRow(
+            Date=self.parse_trade_date(row['trade_date']),
+            Type=TransactionType.TRANSFER_OUTBOUND,
+            Value=row['total'],
+            Transaction_Currency='USD',
+            Shares=None,
+            Ticker_Symbol='',
+            Security_Name='',
+            Note='Auto-generated for Sell mutual fund'
         )
 
     def calculate_value(self, row):
@@ -79,7 +94,8 @@ class PortfolioPerformanceImporter:
         """
         value = row['total']
         try:
-            if (isinstance(value, (int, float)) and abs(value) < 1e-8) or (isinstance(value, str) and (value.strip() == '' or abs(float(value)) < 1e-8)):
+            if (isinstance(value, (int, float)) and abs(value) < 1e-8) or (
+                    isinstance(value, str) and (value.strip() == '' or abs(float(value)) < 1e-8)):
                 value = float(row.get('units', 0)) * float(row.get('unit_price', 0))
         except Exception as e:
             raise ValueError(f"Error calculating value for row: {row}. Exception: {e}")
@@ -95,23 +111,21 @@ class PortfolioPerformanceImporter:
         tferaction = str(row.get('tferaction', '')).upper()
         value = self.calculate_value(row)
         if tferaction == 'IN':
-            type_value = 'Buy'
+            type_value = TransactionType.BUY
             note = 'Transfer In (Buy)'
             value = -1 * abs(value)
         elif tferaction == 'OUT':
-            type_value = 'Sell'
+            type_value = TransactionType.SELL
             note = 'Transfer Out (Sell)'
             value = abs(value)
         else:
-            type_value = 'Unexpected Type'
-            note = 'Transfer'
+            raise ValueError(f"Unhandled tferaction: {tferaction} in row: {row}")
         return PortfolioPerformanceRow(
-            Date=row['trade_date'],
+            Date=self.parse_trade_date(row['trade_date']),
             Type=type_value,
             Value=value,
             Transaction_Currency='USD',
             Shares=row['units'],
-            ISIN='',
             Ticker_Symbol=row.get('ticker', ''),
             Security_Name=row.get('security_name', ''),
             Note=note
@@ -126,16 +140,24 @@ class PortfolioPerformanceImporter:
         value = self.calculate_value(row)
         if tferaction == 'OUT' and abs(value) < 50:
             return PortfolioPerformanceRow(
-                Date=row['trade_date'],
-                Type='Fees',
+                Date=self.parse_trade_date(row['trade_date']),
+                Type=TransactionType.FEES,
                 Value=value,
                 Transaction_Currency='USD',
                 Shares=None,
-                ISIN='',
                 Ticker_Symbol=row.get('ticker', ''),
                 Security_Name=row.get('security_name', ''),
                 Note='Fee transaction (auto-detected)'
             )
+        return None
+
+    def parse_trade_date(self, trade_date_str):
+        """Parse trade_date as a date object (format: yyyy-mm-dd)"""
+        if trade_date_str:
+            try:
+                return pd.to_datetime(trade_date_str, format='%Y-%m-%d').date()
+            except Exception:
+                raise ValueError(f"Invalid trade_date format: {trade_date_str}. Expected yyyy-mm-dd.")
         return None
 
     def transform(self):
@@ -153,6 +175,10 @@ class PortfolioPerformanceImporter:
                 fee_row = self.create_fees(row)
                 if fee_row:
                     result.append(fee_row)
+            elif type_value == 'sellmf':
+                result.append(self.transform_sellmf(row))
+                result.append(self.create_outbound_transfer(row))
+
             else:
                 raise ValueError(f"Unhandled transaction type: {type_value} in row: {row}")
         return result
@@ -160,7 +186,7 @@ class PortfolioPerformanceImporter:
     def merge_inbound_transfers(self, df):
         """
         Merge all 'Transfer (Inbound)' transactions for a day into a single transaction.
-        For merged inbound transfers, Shares, ISIN, Ticker Symbol, and Security Name are set to None or ''.
+        For merged inbound transfers, Shares, Ticker Symbol, and Security Name are set to None or ''.
         Returns a DataFrame with only merged inbound transfers and all other transactions.
         """
         inbound_mask = df['Type'] == 'Transfer (Inbound)'
@@ -174,7 +200,6 @@ class PortfolioPerformanceImporter:
             })
             # Set ignored columns to None or '' for merged inbound transfers
             grouped['Shares'] = None
-            grouped['ISIN'] = None
             grouped['Ticker Symbol'] = None
             grouped['Security Name'] = None
             # Remove original inbound transfers and use only merged
@@ -184,18 +209,14 @@ class PortfolioPerformanceImporter:
 
     def save_transformed(self, output_path='portfolio_performance_import.csv'):
         transformed = self.transform()
-        df = pd.DataFrame([asdict(row) for row in transformed])
+        df = pd.DataFrame([row.to_dict() for row in transformed])
         # Rename columns to match Portfolio Performance import format
-        df.rename(columns={
-            'Transaction_Currency': 'Transaction Currency',
-            'Ticker_Symbol': 'Ticker Symbol',
-            'Security_Name': 'Security Name'
-        }, inplace=True)
+
         # Map of ticker symbol replacements
         ticker_map = {
             '87281J204': 'TR45HT',
-            '06427F314' : 'BNYLCG',
-            '06427F694':'BNYSII'
+            '06427F314': 'BNYLCG',
+            '06427F694': 'BNYSII'
             # Add more mappings here as needed
         }
         if 'Ticker Symbol' in df.columns:
@@ -204,6 +225,7 @@ class PortfolioPerformanceImporter:
         # Sort by Date, Type, and Value before saving
         df = df.sort_values(by=["Date", "Type", "Value"])
         df.to_csv(output_path, index=False)
+
 
 # Example usage:
 
