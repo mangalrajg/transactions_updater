@@ -1,4 +1,5 @@
 import glob
+import os
 
 import pandas as pd
 
@@ -20,15 +21,33 @@ def get_transactions(csv_file):
 
 def get_all_transactions(folder: str):
     t_all = []
-    for file in glob.glob(f"{folder}/transactions.csv"):
+    files = glob.glob(f"{folder}/ch*.csv")
+    if not files:
+        print(f"ERROR: No Chase files found matching pattern '{folder}/ch*.csv'")
+        return t_all
+    for file in files:
         xtions = get_transactions(file)
         t_all.extend(xtions)
     return t_all
 
 
-if __name__ == "__main__":
-    all_t = get_all_transactions(".")
+def import_all_chase(data_folder: str = ".", output_folder: str = "output"):
+    """Import all Chase transactions from the specified data folder"""
+    # Create output folder if it doesn't exist
+    os.makedirs(output_folder, exist_ok=True)
+
+    all_t = get_all_transactions(data_folder)
+    if not all_t:
+        print("WARNING: No transactions found for Chase")
+        return
+
     df = pd.DataFrame([t.to_dict() for t in all_t])
     df = df.sort_values(by=["Date", "Type", "Value"])
-    df.to_csv("chase_aa.csv", index=False)
-    print("done")
+    out_file = os.path.join(output_folder, "Mangal-Chase.csv")
+    df.to_csv(out_file, index=False)
+    print(f"Wrote {out_file}")
+    print("Chase import done")
+
+
+if __name__ == "__main__":
+    import_all_chase(".")

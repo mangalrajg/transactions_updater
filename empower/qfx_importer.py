@@ -33,15 +33,33 @@ def get_transactions(qfx_file):
 
 def get_all_transactions(folder: str):
     t_all = []
-    for file in glob.glob(f"{folder}\Empower.Download.qfx"):
+    files = glob.glob(f"{folder}/Em*.qfx")
+    if not files:
+        print(f"ERROR: No Empower files found matching pattern '{folder}/Em*.qfx'")
+        return t_all
+    for file in files:
         xtions = get_transactions(file)
         t_all.extend(xtions)
     return t_all
 
 
-if __name__ == "__main__":
-    all_t = get_all_transactions(".")
+def import_all_empower(data_folder: str = ".", output_folder: str = "output"):
+    """Import all Empower transactions from the specified data folder"""
+    # Create output folder if it doesn't exist
+    os.makedirs(output_folder, exist_ok=True)
+
+    all_t = get_all_transactions(data_folder)
+    if not all_t:
+        print("WARNING: No transactions found for Empower")
+        return
+
     df = pd.DataFrame([t.to_dict() for t in all_t])
     df = df.sort_values(by=["trade_date", "ticker", "units"])
-    df.to_csv("aa.csv", index=False)
-    print("done")
+    out_file = os.path.join(output_folder, "empower_aa.csv")
+    df.to_csv(out_file, index=False)
+    print(f"Wrote {out_file}")
+    print("Empower import done")
+
+
+if __name__ == "__main__":
+    import_all_empower("data")

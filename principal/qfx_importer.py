@@ -7,16 +7,6 @@ from ofxparse import OfxParser
 from qfx_model import SecurityInfo, TransactionBuilder
 
 
-def rename_qfx(qfx_file):
-    qfx = OfxParser.parse(open(qfx_file, encoding="latin-1"))
-    ed = qfx.account.statement.end_date
-    sd = qfx.account.statement.start_date
-    new_filename = f"EmpowerRetirement_{sd.strftime('%Y-%m-%d')}_to_{ed.strftime('%Y-%m-%d')}"
-    new_file = f"{os.path.dirname(qfx_file)}\\{new_filename}.qfx"
-    print(new_file)
-    os.rename(qfx_file, new_file)
-
-
 def get_transactions(qfx_file):
     print(f"processing {qfx_file}")
     qfx = OfxParser.parse(open(qfx_file, encoding="latin-1"))
@@ -33,15 +23,33 @@ def get_transactions(qfx_file):
 
 def get_all_transactions(folder: str):
     t_all = []
-    for file in glob.glob(f"{folder}\*.qfx"):
+    files = glob.glob(f"{folder}/pr*.qfx")
+    if not files:
+        print(f"ERROR: No Principal files found matching pattern '{folder}/pr*.qfx'")
+        return t_all
+    for file in files:
         xtions = get_transactions(file)
         t_all.extend(xtions)
     return t_all
 
 
-if __name__ == "__main__":
-    all_t = get_all_transactions(".")
+def import_all_principal(data_folder: str = ".", output_folder: str = "output"):
+    """Import all Principal transactions from the specified data folder"""
+    # Create output folder if it doesn't exist
+    os.makedirs(output_folder, exist_ok=True)
+
+    all_t = get_all_transactions(data_folder)
+    if not all_t:
+        print("WARNING: No transactions found for Principal")
+        return
+
     df = pd.DataFrame([t.to_dict() for t in all_t])
     df = df.sort_values(by=["trade_date", "ticker", "units"])
-    df.to_csv("aa.csv", index=False)
-    print("done")
+    out_file = os.path.join(output_folder, "principal_aa.csv")
+    df.to_csv(out_file, index=False)
+    print(f"Wrote {out_file}")
+    print("Principal import done")
+
+
+if __name__ == "__main__":
+    import_all_principal("data")

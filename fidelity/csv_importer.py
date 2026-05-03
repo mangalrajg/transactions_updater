@@ -1,4 +1,5 @@
 import glob
+import os
 from collections import defaultdict
 
 import pandas as pd
@@ -27,14 +28,22 @@ def get_transactions(csv_file):
 
 def get_all_transactions(folder: str):
     all_by_account = defaultdict(list)
-    for file in glob.glob(f"{folder}/*Accounts_History.csv"):
+    files = glob.glob(f"{folder}/fi*.csv")
+    if not files:
+        print(f"ERROR: No Fidelity files found matching pattern '{folder}/fi*.csv'")
+        return all_by_account
+    for file in files:
         file_xtions = get_transactions(file)
         for account_number, xtions in file_xtions.items():
             all_by_account[account_number].extend(xtions)
     return all_by_account
 
 
-if __name__ == "__main__":
+def import_all_fidelity(data_folder: str = ".", output_folder: str = "output"):
+    """Import all Fidelity transactions from the specified data folder"""
+    # Create output folder if it doesn't exist
+    os.makedirs(output_folder, exist_ok=True)
+
     # Map account numbers to filenames
     account_file_map = {
         'Z32333154': 'Mangal-Fidelity',
@@ -43,12 +52,20 @@ if __name__ == "__main__":
         '242899894': 'Manju-FidelityRothIRA',
         '244713544': 'Manju-FidelityIRA'
     }
-    all_by_account = get_all_transactions(".")
+    all_by_account = get_all_transactions(data_folder)
+    if not all_by_account:
+        print("WARNING: No transactions found for Fidelity")
+        return
+
     for account_number, transactions in all_by_account.items():
         df = pd.DataFrame([t.to_dict() for t in transactions])
         df = df.sort_values(by=["Date", "Type", "Value"])
         account_name = account_file_map.get(account_number, account_number)
-        out_file = f"{account_name}.csv"
+        out_file = os.path.join(output_folder, f"{account_name}.csv")
         df.to_csv(out_file, index=False)
         print(f"Wrote {out_file}")
-    print("done")
+    print("Fidelity import done")
+
+
+if __name__ == "__main__":
+    import_all_fidelity(".")
