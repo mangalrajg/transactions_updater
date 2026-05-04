@@ -1,65 +1,62 @@
 """
-Main orchestrator to run all importers one by one.
-Importers read files from the 'data' folder and write outputs to 'output' folder.
+Main orchestrator — runs all importers in sequence.
+  Source files : data/
+  Output files : output/  (wiped and recreated on each run)
+
+To add a new importer: implement BaseImporter, then add one line to IMPORTERS.
+To change a file pattern: edit it here in IMPORTERS — one place for all patterns.
 """
 
 import os
 import shutil
 import sys
+import traceback
 
-# Add project root to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from bofa.csv_importer import import_all_bofa
-from chase.csv_importer import import_all_chase
-from fidelity.csv_importer import import_all_fidelity
-from empower.importer import import_empower
-from principal.importer import import_principal
+from bofa.csv_importer import BofaImporter
+from chase.csv_importer import ChaseImporter
+from fidelity.csv_importer import FidelityImporter
+from empower.importer import EmpowerImporter
+from principal.importer import PrincipalImporter
+from importer_base import BaseImporter
+
+DATA_FOLDER = "data"
+OUTPUT_FOLDER = "output"
+
+# All file patterns live here — one place to change them.
+IMPORTERS: list[BaseImporter] = [
+    BofaImporter("bo*.csv"),
+    ChaseImporter("ch*.csv"),
+    FidelityImporter("fi*.csv"),
+    EmpowerImporter("Em*.qfx"),
+    PrincipalImporter("pr*.qfx"),
+]
 
 
 def main():
-    """Run all importers in sequence"""
-    data_folder = "data"
-    output_folder = "output"
-
     print("=" * 60)
-    print("Starting transaction imports from data folder...")
+    print("Starting transaction imports")
+    print(f"  source : {DATA_FOLDER}/")
+    print(f"  output : {OUTPUT_FOLDER}/")
     print("=" * 60)
-    print()
 
-    # Clean up old output folder
-    if os.path.exists(output_folder):
-        print(f"Cleaning up old {output_folder} folder...")
-        shutil.rmtree(output_folder)
+    # Wipe and recreate the output folder for a clean run
+    if os.path.exists(OUTPUT_FOLDER):
+        shutil.rmtree(OUTPUT_FOLDER)
+    os.makedirs(OUTPUT_FOLDER)
 
-    # Create fresh output folder
-    os.makedirs(output_folder, exist_ok=True)
-    print(f"Created {output_folder} folder")
-    print()
-
-    # Run importers one by one
-    importers = [
-        ("BofA", import_all_bofa),
-        ("Chase", import_all_chase),
-        ("Fidelity", import_all_fidelity),
-        ("Empower", import_empower),
-        ("Principal", import_principal),
-    ]
-
-    for name, importer_func in importers:
+    for importer in IMPORTERS:
+        print(f"\n>>> Running {importer.label} importer...")
         try:
-            print(f"\n>>> Running {name} importer...")
-            importer_func(data_folder, output_folder)
-            print(f"✓ {name} import completed successfully")
+            importer.run(DATA_FOLDER, OUTPUT_FOLDER)
+            print(f"✓ {importer.label} completed")
         except Exception as e:
-            print(f"✗ Error during {name} import: {e}")
-            import traceback
+            print(f"✗ {importer.label} failed: {e}")
             traceback.print_exc()
 
-    print()
-    print("=" * 60)
-    print("All imports completed!")
-    print(f"Output files are in the '{output_folder}' folder")
+    print("\n" + "=" * 60)
+    print(f"All imports done. Output files are in '{OUTPUT_FOLDER}/'")
     print("=" * 60)
 
 
