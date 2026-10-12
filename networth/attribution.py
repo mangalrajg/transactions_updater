@@ -62,19 +62,20 @@ def main():
         elif t["typ"] in INCOME_TYPES:
             per_year[y][1] += usd
 
-    print("| Year | Start | End | Contributions | Dividends & interest | Market gains |")
-    print("|---|---|---|---|---|---|")
+    print("| Year | Start | End | Contributions | Dividends & interest | Market gains | Market % |")
+    print("|---|---|---|---|---|---|---|")
     for y in sorted(per_year):
         start = year_ends.get(str(int(y) - 1), 0.0)
         end_v = year_ends.get(y, 0.0)
         c, i_ = per_year[y]
         m = (end_v - start) - c - i_
+        pct = f"{m / start * 100:+.1f}%" if start else "n/a"
         flag = " *" if y == end[:4] and end[5:] != "12-31" else ""
         print(f"| {y}{flag} | ${start:,.0f} | ${end_v:,.0f} | "
-              f"${c:+,.0f} | ${i_:+,.0f} | ${m:+,.0f} |")
+              f"${c:+,.0f} | ${i_:+,.0f} | ${m:+,.0f} | {pct} |")
     print()
-    print("* partial year; market gains are the residual and include price")
-    print("  changes, FX moves, fees and withholding taxes.")
+    print("* partial year; market % = market gains / start-of-year net worth")
+    print("  (not time-weighted; large in-year contributions skew early years).")
 
 
 if __name__ == "__main__":
