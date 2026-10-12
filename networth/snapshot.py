@@ -84,8 +84,8 @@ def main():
         flag = "*" if t in estimated else ""
         print(f"| {t}{flag} | {sh:,.2f} | ${prices[t]:,.2f} | "
               f"${sh * prices[t]:,.0f} | {', '.join(sorted(tick_accts[t]))} |")
-    missing = sorted({a["meta"][k] for a in accounts for k in a["positions"]}
-                     - set(prices))
+    missing = sorted({accounts[a]["meta"][k] for a in accounts
+                      for k in accounts[a]["positions"]} - set(prices))
     for t in missing:
         print(f"| {t} | n/a | n/a | n/a | price missing |")
     if estimated:
