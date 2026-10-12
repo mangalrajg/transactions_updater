@@ -21,7 +21,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import (
     default_repo_dir, load_transactions, price_on, get_eurusd,
-    CONTRIB_TYPES, INCOME_TYPES,
+    CONTRIB_TYPES, INCOME_TYPES, today_str,
 )
 from history import compute_history
 
@@ -29,7 +29,7 @@ from history import compute_history
 def main():
     argv = sys.argv[1:]
     cache_dir = os.path.expanduser("~/.cache/networth")
-    end = "2026-08-31"
+    end = None
     repo = None
     i = 0
     while i < len(argv):
@@ -42,6 +42,7 @@ def main():
         else:
             i += 1
     repo = repo or default_repo_dir()
+    end = end or today_str()
 
     results, txns, eurusd = compute_history(repo, cache_dir, end)
     year_ends = {}

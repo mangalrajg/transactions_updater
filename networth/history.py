@@ -16,12 +16,16 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import (
     default_repo_dir, load_transactions, load_quotes, price_on, month_ends,
-    get_eurusd, get_proxy_series, get_missing_quotes, series_for,
+    get_eurusd, get_proxy_series, get_missing_quotes, series_for, today_str,
 )
 
 
-def compute_history(repo, cache_dir, end="2026-08-31"):
-    """Return (results, txns, eurusd); results = [(month_end, total_usd)]."""
+def compute_history(repo, cache_dir, end=None):
+    """Return (results, txns, eurusd); results = [(month_end, total_usd)].
+
+    end defaults to today; the series runs through the last completed month.
+    Every input (CSVs, quotes) is read fresh on each run."""
+    end = end or today_str()
     os.makedirs(cache_dir, exist_ok=True)
     txns, meta, key_ccy = load_transactions(repo)
     quotes = load_quotes(repo)
@@ -58,7 +62,7 @@ def compute_history(repo, cache_dir, end="2026-08-31"):
 def main():
     argv = sys.argv[1:]
     cache_dir = os.path.expanduser("~/.cache/networth")
-    end = "2026-08-31"
+    end = None
     chart_path = None
     repo = None
     i = 0

@@ -12,7 +12,7 @@ import json
 import os
 import urllib.request
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 
 KNOWN_TYPES = {
     "Buy", "Sell", "Deposit", "Removal", "Withdrawal", "Interest",
@@ -27,12 +27,24 @@ CONTRIB_TYPES = {"Transfer (Inbound)", "Transfer (Outbound)", "Deposit",
 INCOME_TYPES = {"Dividend", "Interest", "Interest Charge"}
 
 # Legacy 401k funds with no public quotes: (key, anchor_date, anchor_price,
-# yahoo_proxy_symbol). Valued by total-return scaling of the proxy.
+# yahoo_proxy_symbol). Anchors are Yahoo/statement-derived constants, not chat
+# numbers. Valued by total-return scaling of the proxy.
 PROXY_FUNDS = [
     ("TR45HT", "2018-10-18", 20.27, "TRRKX"),   # T. Rowe Price Retirement 2045 Trust-B
     ("BNYLCG", "2021-08-20", 429.30, "FSPGX"),  # BNY Mellon NSL Large Cap Growth
     ("BNYSII", "2020-07-17", 370.28, "FXAIX"),  # BNY Mellon NSL Stock Institutional
 ]
+
+
+def today_str():
+    return date.today().isoformat()
+
+
+def _stale(series, max_age_days=4):
+    """True if the series' newest date is older than max_age_days ago."""
+    if not series:
+        return True
+    return max(series) < (date.today() - timedelta(days=max_age_days)).isoformat()
 
 
 def parse_num(s):
@@ -162,29 +174,35 @@ def month_ends(start_d, end_d):
 
 
 def get_eurusd(cache_dir):
-    """Daily EURUSD (FRED DEXUSEU), cached as JSON."""
+    """Daily EURUSD (FRED DEXUSEU), cached as JSON; refreshed when stale."""
     p = os.path.join(cache_dir, "eurusd.json")
-    if os.path.exists(p):
-        return json.load(open(p))
-    url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DEXUSEU"
-    series = {}
-    with urllib.request.urlopen(url, timeout=30) as fh:
-        for line in fh.read().decode().splitlines()[1:]:
-            d, v = line.split(",")
-            if v and v != ".":
-                series[d] = float(v)
-    os.makedirs(cache_dir, exist_ok=True)
-    json.dump(series, open(p, "w"))
+    series = json.load(open(p)) if os.path.exists(p) else {}
+    if not _stale(series):
+        return series
+    try:
+        url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DEXUSEU"
+        fresh = {}
+        with urllib.request.urlopen(url, timeout=30) as fh:
+            for line in fh.read().decode().splitlines()[1:]:
+                d, v = line.split(",")
+                if v and v != ".":
+                    fresh[d] = float(v)
+    except Exception:
+        return series  # offline: fall back to cached
+    if fresh:
+        os.makedirs(cache_dir, exist_ok=True)
+        json.dump(fresh, open(p, "w"))
+        return fresh
     return series
 
 
-def fetch_yahoo_adj(symbol, start="2016-01-01", end="2026-09-01"):
-    return fetch_yahoo_ohlc(symbol, start, end, field="adjclose")
+def fetch_yahoo_adj(symbol, start="2016-01-01", end=None):
+    return fetch_yahoo_ohlc(symbol, start, end or today_str(), field="adjclose")
 
 
-def fetch_yahoo_daily(symbol, start="2016-01-01", end="2026-09-01"):
+def fetch_yahoo_daily(symbol, start="2016-01-01", end=None):
     """Raw daily closes (not dividend-adjusted) — for position valuation."""
-    return fetch_yahoo_ohlc(symbol, start, end, field="close")
+    return fetch_yahoo_ohlc(symbol, start, end or today_str(), field="close")
 
 
 def fetch_yahoo_ohlc(symbol, start, end, field):
@@ -209,7 +227,8 @@ def fetch_yahoo_ohlc(symbol, start, end, field):
 
 
 def get_missing_quotes(cache_dir, meta, quotes, proxy_series):
-    """Yahoo daily closes (cached) for real tickers lacking quote files."""
+    """Yahoo daily closes (cached, refreshed when stale) for real tickers
+    lacking quote files. Quote files in the repo always take precedence."""
     proxy_tickers = {p[0] for p in PROXY_FUNDS}
     out = {}
     for key, ticker in meta.items():
@@ -218,18 +237,18 @@ def get_missing_quotes(cache_dir, meta, quotes, proxy_series):
         if ticker == "FTIHX":  # covered by null.csv via series_for
             continue
         cp = os.path.join(cache_dir, f"yahoo_daily_{ticker}.json")
-        if os.path.exists(cp):
-            series = json.load(open(cp))
-        else:
+        series = json.load(open(cp)) if os.path.exists(cp) else {}
+        if _stale(series):
             try:
-                series = fetch_yahoo_daily(ticker)
+                fresh = fetch_yahoo_daily(ticker)
             except Exception:
-                continue
-            if not series:
-                continue
-            os.makedirs(cache_dir, exist_ok=True)
-            json.dump(series, open(cp, "w"))
-        out[key] = sorted(series.items())
+                fresh = {}
+            if fresh:
+                series = fresh
+                os.makedirs(cache_dir, exist_ok=True)
+                json.dump(series, open(cp, "w"))
+        if series:
+            out[key] = sorted(series.items())
     return out
 
 
@@ -238,12 +257,18 @@ def get_proxy_series(cache_dir):
     out = {}
     for fund, anchor_d, anchor_p, sym in PROXY_FUNDS:
         cp = os.path.join(cache_dir, f"yahoo_{sym}.json")
-        if os.path.exists(cp):
-            adj = json.load(open(cp))
-        else:
-            adj = fetch_yahoo_adj(sym)
-            os.makedirs(cache_dir, exist_ok=True)
-            json.dump(adj, open(cp, "w"))
+        adj = json.load(open(cp)) if os.path.exists(cp) else {}
+        if _stale(adj):
+            try:
+                fresh = fetch_yahoo_adj(sym)
+            except Exception:
+                fresh = {}
+            if fresh:
+                adj = fresh
+                os.makedirs(cache_dir, exist_ok=True)
+                json.dump(adj, open(cp, "w"))
+        if not adj:
+            continue  # offline with no cache: skip this proxy fund
         if anchor_d not in adj:
             anchor_d = min(d for d in adj if d >= anchor_d)
         base = adj[anchor_d]
