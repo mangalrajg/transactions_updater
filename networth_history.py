@@ -14,6 +14,7 @@ Special cases:
 
 Usage:
     python3 networth_history.py [repo_dir] [--cache DIR] [--end YYYY-MM-DD] [--chart out.png]
+    python3 networth_history.py [repo_dir] --attribution   # yearly split: contributions / income / market
 
 Prints a markdown table of month-end totals to stdout.
 """
@@ -88,7 +89,7 @@ def load_transactions(repo):
                         dshares = -shares
                 if key and key not in meta:
                     meta[key] = ticker or key
-                txns.append({"date": d, "acct": acct, "value": val, "ccy": ccy,
+                txns.append({"date": d, "acct": acct, "typ": typ, "value": val, "ccy": ccy,
                              "key": key, "dshares": dshares})
     txns.sort(key=lambda t: t["date"])
     return txns, meta
@@ -178,11 +179,44 @@ def price_on(series, d):
     return best or 0.0
 
 
+def print_attribution(txns, eurusd, year_ends):
+    """Split each year's net-worth change into contributions, income, market."""
+    CONTRIB = {"Transfer (Inbound)", "Transfer (Outbound)", "Deposit",
+               "Removal", "Withdrawal"}
+    INCOME = {"Dividend", "Interest", "Interest Charge"}
+    fx_series = sorted(eurusd.items())
+    per_year = defaultdict(lambda: [0.0, 0.0])  # year -> [contrib, income]
+    for t in txns:
+        y = t["date"][:4]
+        if y < "2018":
+            continue
+        fx = price_on(fx_series, t["date"]) or 1.0
+        usd = t["value"] * (fx if t["ccy"] == "EUR" else 1.0)
+        if t["typ"] in CONTRIB:
+            per_year[y][0] += usd
+        elif t["typ"] in INCOME:
+            per_year[y][1] += usd
+    print("| Year | Start | End | Contributions | Dividends & interest | Market gains |")
+    print("|---|---|---|---|---|---|")
+    for y in sorted(per_year):
+        start = year_ends.get(str(int(y) - 1), 0.0)
+        end = year_ends.get(y, 0.0)
+        c, i = per_year[y]
+        m = (end - start) - c - i
+        flag = " *" if y == "2026" else ""
+        print(f"| {y}{flag} | ${start:,.0f} | ${end:,.0f} | "
+              f"${c:+,.0f} | ${i:+,.0f} | ${m:+,.0f} |")
+    print()
+    print("* 2026 through Aug 31; market gains are the residual and include price")
+    print("  changes, FX moves, fees and withholding taxes.")
+
+
 def main():
     argv = sys.argv[1:]
     cache_dir = os.path.expanduser("~/.cache/networth_history")
     end = "2026-08-31"
     chart_path = None
+    attribution = False
     repo = None
     i = 0
     while i < len(argv):
@@ -192,6 +226,8 @@ def main():
             end = argv[i + 1]; i += 2
         elif argv[i] == "--chart":
             chart_path = argv[i + 1]; i += 2
+        elif argv[i] == "--attribution":
+            attribution = True; i += 1
         elif not argv[i].startswith("-") and repo is None:
             repo = argv[i]; i += 1
         else:
@@ -259,6 +295,15 @@ def main():
     print("|---|---|")
     for snap, total in results:
         print(f"| {snap[:7]} | ${total:,.0f} |")
+
+    if attribution:
+        print()
+        year_ends = {}
+        for snap, total in results:
+            if snap[5:7] == "12" or snap == results[-1][0]:
+                year_ends[snap[:4]] = total
+        print_attribution(txns, eurusd, year_ends)
+        return
 
     if chart_path:
         import matplotlib
