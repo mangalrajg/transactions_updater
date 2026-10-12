@@ -16,7 +16,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import (
     default_repo_dir, load_transactions, load_quotes, price_on, month_ends,
-    get_eurusd, get_proxy_series, series_for,
+    get_eurusd, get_proxy_series, get_missing_quotes, series_for,
 )
 
 
@@ -27,6 +27,7 @@ def compute_history(repo, cache_dir, end="2026-08-31"):
     quotes = load_quotes(repo)
     eurusd = get_eurusd(cache_dir)
     proxy_series = get_proxy_series(cache_dir)
+    quotes.update(get_missing_quotes(cache_dir, meta, quotes, proxy_series))
     series_cache = {k: series_for(k, meta, quotes, proxy_series) for k in meta}
     fx_series = sorted(eurusd.items())
 

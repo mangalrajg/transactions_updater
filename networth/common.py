@@ -179,6 +179,15 @@ def get_eurusd(cache_dir):
 
 
 def fetch_yahoo_adj(symbol, start="2016-01-01", end="2026-09-01"):
+    return fetch_yahoo_ohlc(symbol, start, end, field="adjclose")
+
+
+def fetch_yahoo_daily(symbol, start="2016-01-01", end="2026-09-01"):
+    """Raw daily closes (not dividend-adjusted) — for position valuation."""
+    return fetch_yahoo_ohlc(symbol, start, end, field="close")
+
+
+def fetch_yahoo_ohlc(symbol, start, end, field):
     import datetime
     p1 = int(datetime.datetime.fromisoformat(start).replace(
         tzinfo=datetime.timezone.utc).timestamp())
@@ -189,12 +198,38 @@ def fetch_yahoo_adj(symbol, start="2016-01-01", end="2026-09-01"):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     res = json.load(urllib.request.urlopen(req, timeout=30))["chart"]["result"][0]
     ts = res["timestamp"]
-    adj = res["indicators"]["adjclose"][0]["adjclose"]
+    vals = res["indicators"]["quote"][0]["close"] if field == "close" \
+        else res["indicators"]["adjclose"][0]["adjclose"]
     out = {}
-    for t, a in zip(ts, adj):
-        if a:
+    for t, v in zip(ts, vals):
+        if v:
             out[datetime.datetime.fromtimestamp(
-                t, datetime.timezone.utc).date().isoformat()] = a
+                t, datetime.timezone.utc).date().isoformat()] = v
+    return out
+
+
+def get_missing_quotes(cache_dir, meta, quotes, proxy_series):
+    """Yahoo daily closes (cached) for real tickers lacking quote files."""
+    proxy_tickers = {p[0] for p in PROXY_FUNDS}
+    out = {}
+    for key, ticker in meta.items():
+        if key in quotes or not ticker or ticker in proxy_tickers:
+            continue
+        if ticker == "FTIHX":  # covered by null.csv via series_for
+            continue
+        cp = os.path.join(cache_dir, f"yahoo_daily_{ticker}.json")
+        if os.path.exists(cp):
+            series = json.load(open(cp))
+        else:
+            try:
+                series = fetch_yahoo_daily(ticker)
+            except Exception:
+                continue
+            if not series:
+                continue
+            os.makedirs(cache_dir, exist_ok=True)
+            json.dump(series, open(cp, "w"))
+        out[key] = sorted(series.items())
     return out
 
 
