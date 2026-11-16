@@ -6,6 +6,10 @@ Two views of the same money, reconciled column by column:
 * New-money view: net external cash flows (transfers / deposits /
   withdrawals), split into investment accounts vs. other accounts
   (savings, CDs, Treasury). The total is the year's true contributions.
+  New cash to investments is split further into 401(k) accounts vs.
+  other investment accounts; transfers between the two groups (401(k)
+  -> IRA rollovers) are the same money changing buckets, not new
+  money, so matched rollover legs are excluded from both groups.
 * Portfolio Performance view: for investment accounts PP counts net
   purchases (buys - sells). The bridge is exact, month by month:
 
@@ -33,6 +37,10 @@ INVEST = {
     "Mangal-FidelityRoth", "Manju-Fidelity", "Manju-FidelityIRA",
     "Manju-FidelityRothIRA", "Manju-Milliman401K", "Manju-MillimanRoth401K",
     "Manju-MutualsOfOmaha", "Manju-Principal", "SG-Shares-Wise",
+}
+K401 = {
+    "Mangal-Empower", "Manju-Milliman401K", "Manju-MillimanRoth401K",
+    "Manju-MutualsOfOmaha", "Manju-Principal",
 }
 FLOW_TYPES = {"Transfer (Inbound)", "Transfer (Outbound)", "Deposit",
               "Removal", "Withdrawal"}
@@ -76,6 +84,36 @@ def compute(repo, cache_dir):
     def usd(t):
         return t["value"] * fx_on(t["date"], t["ccy"])
 
+    # Match cross-group internal transfers (401(k) <-> other investment):
+    # opposite signs, equal |amount| within $1, dates within 45 days.
+    # Both legs are excluded from the 401(k)/non-401(k) split (they net
+    # to zero in the total either way).
+    from datetime import date as _date
+
+    def _ord(ds):
+        return _date(int(ds[:4]), int(ds[5:7]), int(ds[8:10])).toordinal()
+
+    flows = [t for t in txns if t["acct"] in INVEST
+             and t["typ"] in FLOW_TYPES and t["date"][:7] >= FIRST_MONTH]
+    cands = []
+    for i, a in enumerate(flows):
+        if a["acct"] not in K401:
+            continue
+        for j, b in enumerate(flows):
+            if b["acct"] in K401 or usd(a) * usd(b) >= 0:
+                continue
+            if (abs(abs(usd(a)) - abs(usd(b))) <= 1.0
+                    and abs(_ord(a["date"]) - _ord(b["date"])) <= 45):
+                cands.append((abs(usd(a)), i, j))
+    cands.sort(reverse=True)
+    used, rollovers = set(), []
+    for _amt, i, j in cands:
+        if i in used or j in used:
+            continue
+        used.add(i); used.add(j)
+        rollovers.append((flows[i], flows[j]))
+    rollover_ids = {id(t) for pair in rollovers for t in pair}
+
     # Seed: investment-account cash carried into FIRST_MONTH (cash is kept
     # in USD at transaction-date rates, so month differences are exact).
     cash_usd = 0.0
@@ -89,12 +127,18 @@ def compute(repo, cache_dir):
     prev_cash = cash_usd
     for m in months:
         new_cash = other_dep = div_int = fees = pp_inv = 0.0
+        new_401k = new_non = 0.0
         for t in by_month.get(m, []):
             v = usd(t)
             if t["acct"] in INVEST:
                 cash_usd += v
                 if t["typ"] in FLOW_TYPES:
                     new_cash += v
+                    if id(t) not in rollover_ids:
+                        if t["acct"] in K401:
+                            new_401k += v
+                        else:
+                            new_non += v
                 elif t["typ"] in ("Dividend", "Interest"):
                     div_int += v
                 elif t["typ"] in ("Fees", "Taxes"):
@@ -105,18 +149,21 @@ def compute(repo, cache_dir):
                 other_dep += v
         rows.append({
             "month": m, "other": other_dep, "new_cash": new_cash,
+            "new_401k": new_401k, "new_non": new_non,
             "div_int": div_int, "fees": fees, "pp": pp_inv,
             "dcash": cash_usd - prev_cash,
         })
         prev_cash = cash_usd
-    return rows, last_month
+    rollover_info = [(a["date"], a["acct"], usd(a), b["date"], b["acct"],
+                      usd(b)) for a, b in rollovers]
+    return rows, last_month, rollover_info
 
 
 def fmt(v):
     return f"{v:,.0f}"
 
 
-def render(rows, last_month):
+def render(rows, last_month, rollovers=()):
     lines = []
     lines.append("# Monthly contributions — new money vs Portfolio Performance")
     lines.append("")
@@ -131,6 +178,12 @@ def render(rows, last_month):
                  "CD, Capital One, Barclays and Treasury accounts.")
     lines.append("- **New cash to investments**: net transfers/deposits into "
                  "brokerage and retirement accounts.")
+    lines.append("- **... to 401(k)**: the part landing in 401(k) accounts "
+                 "(Empower, Milliman, Mutual of Omaha, Principal).")
+    lines.append("- **... to other investments**: the part landing in "
+                 "brokerages, IRAs and the SG share plan. 401(k) -> IRA "
+                 "rollovers are excluded from both columns: they move "
+                 "existing money between buckets, they are not new money.")
     lines.append("- **Total new money**: the month's true contributions.")
     lines.append("- **Cash build-up**: money that arrived in the investment "
                  "accounts but was still uninvested cash at month-end "
@@ -142,39 +195,53 @@ def render(rows, last_month):
     years = sorted({r["month"][:4] for r in rows})
     lines.append("## Year summary")
     lines.append("")
-    lines.append("| Year | Other deposits | New cash to investments | Total "
+    lines.append("| Year | Other deposits | New cash to 401(k) | New cash "
+                 "to other investments | New cash to investments | Total "
                  "new money | Dividends & interest | Fees | Cash build-up | "
                  "PP new investments |")
-    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for y in years:
         ys = [r for r in rows if r["month"].startswith(y)]
         s = lambda k: sum(r[k] for r in ys)
-        lines.append(f"| {y} | {fmt(s('other'))} | {fmt(s('new_cash'))} | "
+        lines.append(f"| {y} | {fmt(s('other'))} | {fmt(s('new_401k'))} | "
+                     f"{fmt(s('new_non'))} | {fmt(s('new_cash'))} | "
                      f"{fmt(s('other') + s('new_cash'))} | {fmt(s('div_int'))} "
                      f"| {fmt(s('fees'))} | {fmt(s('dcash'))} | {fmt(s('pp'))} |")
     s = lambda k: sum(r[k] for r in rows)
-    lines.append(f"| **All** | **{fmt(s('other'))}** | **{fmt(s('new_cash'))}** "
+    lines.append(f"| **All** | **{fmt(s('other'))}** | **{fmt(s('new_401k'))}** "
+                 f"| **{fmt(s('new_non'))}** | **{fmt(s('new_cash'))}** "
                  f"| **{fmt(s('other') + s('new_cash'))}** | "
                  f"**{fmt(s('div_int'))}** | **{fmt(s('fees'))}** | "
                  f"**{fmt(s('dcash'))}** | **{fmt(s('pp'))}** |")
     lines.append("")
+    if rollovers:
+        lines.append("Rollovers excluded from the 401(k) / other split "
+                     "(money moved between the two groups):")
+        lines.append("")
+        for d1, a1, v1, d2, a2, v2 in sorted(rollovers):
+            lines.append(f"- {d1[:10]}: {a1} {fmt(v1)} -> {a2} {fmt(v2)} "
+                         f"({d2[:10]})")
+        lines.append("")
 
     for y in years:
         lines.append(f"## {y}")
         lines.append("")
-        lines.append("| Month | Other deposits | New cash to investments | "
+        lines.append("| Month | Other deposits | To 401(k) | To other "
+                     "investments | New cash to investments | "
                      "Total new money | + Dividends & interest | − Fees | "
                      "− Cash build-up | = PP new investments |")
-        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
         for r in [r for r in rows if r["month"].startswith(y)]:
             lines.append(
-                f"| {r['month']} | {fmt(r['other'])} | {fmt(r['new_cash'])} | "
+                f"| {r['month']} | {fmt(r['other'])} | {fmt(r['new_401k'])} | "
+                f"{fmt(r['new_non'])} | {fmt(r['new_cash'])} | "
                 f"{fmt(r['other'] + r['new_cash'])} | {fmt(r['div_int'])} | "
                 f"{fmt(r['fees'])} | {fmt(r['dcash'])} | {fmt(r['pp'])} |")
         ys = [r for r in rows if r["month"].startswith(y)]
         t = lambda k: sum(r[k] for r in ys)
         lines.append(
-            f"| **Total** | **{fmt(t('other'))}** | **{fmt(t('new_cash'))}** "
+            f"| **Total** | **{fmt(t('other'))}** | **{fmt(t('new_401k'))}** "
+            f"| **{fmt(t('new_non'))}** | **{fmt(t('new_cash'))}** "
             f"| **{fmt(t('other') + t('new_cash'))}** | **{fmt(t('div_int'))}** "
             f"| **{fmt(t('fees'))}** | **{fmt(t('dcash'))}** | **{fmt(t('pp'))}** |")
         lines.append("")
@@ -197,8 +264,8 @@ def main():
         else:
             i += 1
     repo = repo or default_repo_dir()
-    rows, last_month = compute(repo, cache_dir)
-    md = render(rows, last_month)
+    rows, last_month, rollovers = compute(repo, cache_dir)
+    md = render(rows, last_month, rollovers)
     if out_path:
         with open(out_path, "w") as f:
             f.write(md)
