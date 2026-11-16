@@ -1,29 +1,40 @@
 #!/usr/bin/env python3
 """Monthly contributions report, 2018 onward, as a Markdown file.
 
-Two views of the same money, reconciled column by column:
+The layout is a sources-and-uses statement. Money available to put to
+work in a period:
 
-* New-money view: net external cash flows (transfers / deposits /
-  withdrawals), split into investment accounts vs. other accounts
-  (savings, CDs, Treasury). The total is the year's true contributions.
-  New cash to investments is split further into 401(k) accounts vs.
-  other investment accounts; transfers between the two groups (401(k)
-  -> IRA rollovers) are the same money changing buckets, not new
-  money, so matched rollover legs are excluded from both groups.
-* Portfolio Performance view: for investment accounts PP counts net
-  purchases (buys - sells). The bridge is exact, month by month:
+    Put to work = New money + Dividends + Interest - Fees - Cash build-up
 
-      PP new investments = new cash to investments
-                         + dividends (& interest) received in those accounts
-                         - fees & taxes in those accounts
-                         - cash build-up (money that arrived in the
-                           investment accounts but was still uninvested
-                           cash at month-end; negative = cash drawn down)
+* New money: net external cash flows (transfers / deposits /
+  withdrawals) into all tracked accounts.
+* Dividends / Interest / Fees: across ALL accounts (interest at
+  Marcus and TreasuryDirect counts too, not just investment income).
+* Cash build-up: change in uninvested cash inside the investment
+  accounts only (bank balances are a destination below, not "cash").
 
-A memo column also tracks US Treasury purchases (net of sales and
-redemptions), merging I Bonds at TreasuryDirect with Treasury bonds
-held at Fidelity. It is not new money: both parts were already counted
-when the cash entered the accounts.
+Where it went — four destinations that sum exactly to Put to work:
+
+* Retirement: net purchases (buys - sells) in the 401(k) and IRA
+  accounts. 401(k) -> IRA rollovers stay inside this bucket and so
+  never show up as money leaving retirement.
+* Treasury: US Treasury buying with I Bonds and bonds merged —
+  balance growth of the two TreasuryDirect accounts (deposits +
+  accrued interest - redemptions) plus Treasury bonds bought - sold
+  at Fidelity (CUSIP prefix 912).
+* CDs, savings: balance growth of the Marcus / Barclays / Capital One
+  accounts (deposits + interest - withdrawals).
+* Brokerage: net purchases in the taxable brokerage accounts
+  (Fidelity, Chase, SG shares), excluding Treasury bonds.
+
+Memo column:
+
+* PP new investments: Portfolio Performance's net purchases across
+  all investment accounts = Retirement + Brokerage + Treasury bonds
+  bought at Fidelity. (I Bonds and savings are not security purchases
+  in PP, so they are not in it.) It also equals the older bridge:
+  new cash to investments + dividends & interest in those accounts
+  - fees there - cash build-up.
 
 All inputs are read fresh from the finance-data repo on every run.
 
@@ -43,22 +54,26 @@ INVEST = {
     "Manju-FidelityRothIRA", "Manju-Milliman401K", "Manju-MillimanRoth401K",
     "Manju-MutualsOfOmaha", "Manju-Principal", "SG-Shares-Wise",
 }
-K401 = {
+RETIREMENT = {
     "Mangal-Empower", "Manju-Milliman401K", "Manju-MillimanRoth401K",
     "Manju-MutualsOfOmaha", "Manju-Principal",
+    "Mangal-FidelityRoth", "Manju-FidelityIRA", "Manju-FidelityRothIRA",
 }
 TREASURY_DIRECT = {"Mangal-Treasury", "Manju-Treasury"}
+BANK = {
+    "Mangal-Barclays", "Mangal-CapitalOne", "Mangal-Marcus-CD",
+    "Mangal-Marcus-Savings", "Manju-Barclays", "Manju-CapitalOne",
+    "Manju-Marcus-CD", "Manju-Marcus-Saving",
+}
+FLOW_TYPES = {"Transfer (Inbound)", "Transfer (Outbound)", "Deposit",
+              "Removal", "Withdrawal"}
+FIRST_MONTH = "2018-01"
 
 
 def is_treasury(t):
     # US Treasury CUSIPs all start with 912; the key is ISIN else ticker.
     key = t.get("key") or ""
     return key.startswith("US912") or key.startswith("912")
-
-
-FLOW_TYPES = {"Transfer (Inbound)", "Transfer (Outbound)", "Deposit",
-              "Removal", "Withdrawal"}
-FIRST_MONTH = "2018-01"
 
 
 def month_range(start, end):
@@ -98,36 +113,6 @@ def compute(repo, cache_dir):
     def usd(t):
         return t["value"] * fx_on(t["date"], t["ccy"])
 
-    # Match cross-group internal transfers (401(k) <-> other investment):
-    # opposite signs, equal |amount| within $1, dates within 45 days.
-    # Both legs are excluded from the 401(k)/non-401(k) split (they net
-    # to zero in the total either way).
-    from datetime import date as _date
-
-    def _ord(ds):
-        return _date(int(ds[:4]), int(ds[5:7]), int(ds[8:10])).toordinal()
-
-    flows = [t for t in txns if t["acct"] in INVEST
-             and t["typ"] in FLOW_TYPES and t["date"][:7] >= FIRST_MONTH]
-    cands = []
-    for i, a in enumerate(flows):
-        if a["acct"] not in K401:
-            continue
-        for j, b in enumerate(flows):
-            if b["acct"] in K401 or usd(a) * usd(b) >= 0:
-                continue
-            if (abs(abs(usd(a)) - abs(usd(b))) <= 1.0
-                    and abs(_ord(a["date"]) - _ord(b["date"])) <= 45):
-                cands.append((abs(usd(a)), i, j))
-    cands.sort(reverse=True)
-    used, rollovers = set(), []
-    for _amt, i, j in cands:
-        if i in used or j in used:
-            continue
-        used.add(i); used.add(j)
-        rollovers.append((flows[i], flows[j]))
-    rollover_ids = {id(t) for pair in rollovers for t in pair}
-
     # Seed: investment-account cash carried into FIRST_MONTH (cash is kept
     # in USD at transaction-date rates, so month differences are exact).
     cash_usd = 0.0
@@ -140,80 +125,89 @@ def compute(repo, cache_dir):
     rows = []
     prev_cash = cash_usd
     for m in months:
-        new_cash = other_dep = div_int = fees = pp_inv = 0.0
-        new_401k = new_non = treasury = 0.0
+        nm = div = intr = fees = pp_inv = 0.0
+        ret = treas = bank = brok = 0.0
         for t in by_month.get(m, []):
             v = usd(t)
-            if t["acct"] in TREASURY_DIRECT:
-                if t["typ"] in FLOW_TYPES:
-                    treasury += v  # I Bond purchase / redemption
-            elif t["typ"] in ("Buy", "Sell") and is_treasury(t):
-                treasury += -v  # Treasury bond bought / sold at a broker
+            if t["typ"] in FLOW_TYPES:
+                nm += v  # internal transfers cancel across accounts
+            elif t["typ"] == "Dividend":
+                div += v
+            elif t["typ"] == "Interest":
+                intr += v
+            elif t["typ"] in ("Fees", "Taxes"):
+                fees += -v
             if t["acct"] in INVEST:
                 cash_usd += v
-                if t["typ"] in FLOW_TYPES:
-                    new_cash += v
-                    if id(t) not in rollover_ids:
-                        if t["acct"] in K401:
-                            new_401k += v
-                        else:
-                            new_non += v
-                elif t["typ"] in ("Dividend", "Interest"):
-                    div_int += v
-                elif t["typ"] in ("Fees", "Taxes"):
-                    fees += -v
-                elif t["typ"] in ("Buy", "Sell"):
+                if t["typ"] in ("Buy", "Sell"):
                     pp_inv += -v
-            elif t["typ"] in FLOW_TYPES:
-                other_dep += v
-        rows.append({
-            "month": m, "other": other_dep, "new_cash": new_cash,
-            "new_401k": new_401k, "new_non": new_non,
-            "treasury": treasury,
-            "div_int": div_int, "fees": fees, "pp": pp_inv,
-            "dcash": cash_usd - prev_cash,
-        })
+                    if is_treasury(t):
+                        treas += -v  # Treasury bond at a broker
+                    elif t["acct"] in RETIREMENT:
+                        ret += -v
+                    else:
+                        brok += -v
+            if t["acct"] in TREASURY_DIRECT:
+                treas += v  # I Bond balance growth (deposits + interest)
+            elif t["acct"] in BANK:
+                bank += v  # savings/CD balance growth
+        dcash = cash_usd - prev_cash
         prev_cash = cash_usd
-    rollover_info = [(a["date"], a["acct"], usd(a), b["date"], b["acct"],
-                      usd(b)) for a, b in rollovers]
-    return rows, last_month, rollover_info
+        rows.append({
+            "month": m, "nm": nm, "div": div, "intr": intr, "fees": fees,
+            "dcash": dcash, "pool": nm + div + intr - fees - dcash,
+            "ret": ret, "treas": treas, "bank": bank, "brok": brok,
+            "pp": pp_inv,
+        })
+    return rows, last_month
 
 
 def fmt(v):
     return f"{v:,.0f}"
 
 
-def render(rows, last_month, rollovers=()):
+COLS = [("nm", "New money"), ("div", "Dividends"), ("intr", "Interest"),
+        ("fees", "Fees"), ("dcash", "Cash build-up"),
+        ("pool", "Put to work"), ("ret", "Retirement"),
+        ("treas", "Treasury"), ("bank", "CDs, savings"),
+        ("brok", "Brokerage"), ("pp", "PP new investments")]
+
+
+def render(rows, last_month):
     lines = []
-    lines.append("# Monthly contributions — new money vs Portfolio Performance")
+    lines.append("# Monthly contributions — sources and uses")
     lines.append("")
-    lines.append("Net external cash flows into the tracked accounts, split by "
-                 "destination, with the bridge to Portfolio Performance's "
-                 "net-purchases figure for investment accounts:")
+    lines.append("Where the money came from, and where it was put to work:")
     lines.append("")
-    lines.append("`PP new investments = New cash to investments + Dividends "
-                 "& interest − Fees − Cash build-up`")
+    lines.append("`Put to work = New money + Dividends + Interest − Fees "
+                 "− Cash build-up = Retirement + Treasury + CDs, savings "
+                 "+ Brokerage`")
     lines.append("")
-    lines.append("- **Other deposits**: net deposits/withdrawals in savings, "
-                 "CD, Capital One, Barclays and Treasury accounts.")
-    lines.append("- **New cash to investments**: net transfers/deposits into "
-                 "brokerage and retirement accounts.")
-    lines.append("- **... to 401(k)**: the part landing in 401(k) accounts "
-                 "(Empower, Milliman, Mutual of Omaha, Principal).")
-    lines.append("- **... to other investments**: the part landing in "
-                 "brokerages, IRAs and the SG share plan. 401(k) -> IRA "
-                 "rollovers are excluded from both columns: they move "
-                 "existing money between buckets, they are not new money.")
-    lines.append("- **Total new money**: the month's true contributions.")
-    lines.append("- **Treasury purchases (net)**: US Treasury buying with "
-                 "I Bonds and bonds merged — deposits minus redemptions in "
-                 "the two TreasuryDirect accounts, plus Treasury bonds "
-                 "bought minus sold at Fidelity (the 2044 and 2045 bonds). "
-                 "Memo column, not new money: it was already counted when "
-                 "the cash entered those accounts.")
-    lines.append("- **Cash build-up**: money that arrived in the investment "
-                 "accounts but was still uninvested cash at month-end "
-                 "(negative = earlier cash was drawn down and invested).")
+    lines.append("- **New money**: net external cash flows into all "
+                 "tracked accounts.")
+    lines.append("- **Dividends / Interest / Fees**: across all accounts, "
+                 "including interest at Marcus and TreasuryDirect.")
+    lines.append("- **Cash build-up**: change in uninvested cash inside "
+                 "the investment accounts (negative = earlier cash was "
+                 "drawn down and invested). Bank balances are not cash "
+                 "here — they are the CDs, savings destination.")
+    lines.append("- **Retirement**: net purchases in the 401(k) and IRA "
+                 "accounts. 401(k) → IRA rollovers stay inside this "
+                 "bucket, so they never appear as money leaving "
+                 "retirement.")
+    lines.append("- **Treasury**: I Bonds and Treasury bonds merged — "
+                 "balance growth of the two TreasuryDirect accounts "
+                 "(deposits + accrued interest − redemptions) plus "
+                 "Treasury bonds bought − sold at Fidelity.")
+    lines.append("- **CDs, savings**: balance growth of the Marcus, "
+                 "Barclays and Capital One accounts (deposits + "
+                 "interest − withdrawals).")
+    lines.append("- **Brokerage**: net purchases in the taxable "
+                 "brokerage accounts, excluding Treasury bonds.")
+    lines.append("- **PP new investments**: Portfolio Performance's net "
+                 "purchases across all investment accounts = Retirement "
+                 "+ Brokerage + Treasury bonds bought at Fidelity. "
+                 "Memo column; I Bonds and savings are not in it.")
     lines.append("- Figures rounded to dollars; a row may be off by 1. "
                  f"Data through {last_month}.")
     lines.append("")
@@ -221,71 +215,31 @@ def render(rows, last_month, rollovers=()):
     years = sorted({r["month"][:4] for r in rows})
     lines.append("## Year summary")
     lines.append("")
-    lines.append("| Year | Other deposits | New cash to 401(k) | New cash "
-                 "to other investments | New cash to investments | Total "
-                 "new money | Dividends & interest | Fees | Cash build-up | "
-                 "PP new investments | Treasury purchases (net) |")
-    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("| Year | " + " | ".join(h for _, h in COLS) + " |")
+    lines.append("|---|" + "---:|" * len(COLS))
     for y in years:
         ys = [r for r in rows if r["month"].startswith(y)]
         s = lambda k: sum(r[k] for r in ys)
-        lines.append(f"| {y} | {fmt(s('other'))} | {fmt(s('new_401k'))} | "
-                     f"{fmt(s('new_non'))} | {fmt(s('new_cash'))} | "
-                     f"{fmt(s('other') + s('new_cash'))} | {fmt(s('div_int'))} "
-                     f"| {fmt(s('fees'))} | {fmt(s('dcash'))} | {fmt(s('pp'))} "
-                     f"| {fmt(s('treasury'))} |")
+        lines.append(f"| {y} | " + " | ".join(fmt(s(k)) for k, _ in COLS)
+                     + " |")
     s = lambda k: sum(r[k] for r in rows)
-    lines.append(f"| **All** | **{fmt(s('other'))}** | **{fmt(s('new_401k'))}** "
-                 f"| **{fmt(s('new_non'))}** | **{fmt(s('new_cash'))}** "
-                 f"| **{fmt(s('other') + s('new_cash'))}** | "
-                 f"**{fmt(s('div_int'))}** | **{fmt(s('fees'))}** | "
-                 f"**{fmt(s('dcash'))}** | **{fmt(s('pp'))}** | "
-                 f"**{fmt(s('treasury'))}** |")
+    lines.append("| **All** | " + " | ".join(f"**{fmt(s(k))}**"
+                                             for k, _ in COLS) + " |")
     lines.append("")
-    if rollovers:
-        lines.append("Rollovers excluded from the 401(k) / other split "
-                     "(money moved between the two groups):")
-        lines.append("")
-        for d1, a1, v1, d2, a2, v2 in sorted(rollovers):
-            lines.append(f"- {d1[:10]}: {a1} {fmt(v1)} -> {a2} {fmt(v2)} "
-                         f"({d2[:10]})")
-        lines.append("")
 
     for y in years:
         ys = [r for r in rows if r["month"].startswith(y)]
         t = lambda k: sum(r[k] for r in ys)
-        # The Treasury column appears in a year's monthly table only if
-        # that year actually had Treasury purchases or sales.
-        has_tr = abs(t("treasury")) > 0.5
         lines.append(f"## {y}")
         lines.append("")
-        hdr = ("| Month | Other deposits | To 401(k) | To other "
-               "investments | New cash to investments | "
-               "Total new money | + Dividends & interest | − Fees | "
-               "− Cash build-up | = PP new investments |")
-        sep = "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
-        if has_tr:
-            hdr += " Treasury purchases (net) |"
-            sep += "---:|"
-        lines.append(hdr)
-        lines.append(sep)
+        lines.append("| Month | " + " | ".join(h for _, h in COLS) + " |")
+        lines.append("|---|" + "---:|" * len(COLS))
         for r in ys:
-            line = (
-                f"| {r['month']} | {fmt(r['other'])} | {fmt(r['new_401k'])} | "
-                f"{fmt(r['new_non'])} | {fmt(r['new_cash'])} | "
-                f"{fmt(r['other'] + r['new_cash'])} | {fmt(r['div_int'])} | "
-                f"{fmt(r['fees'])} | {fmt(r['dcash'])} | {fmt(r['pp'])} |")
-            if has_tr:
-                line += f" {fmt(r['treasury'])} |"
-            lines.append(line)
-        line = (
-            f"| **Total** | **{fmt(t('other'))}** | **{fmt(t('new_401k'))}** "
-            f"| **{fmt(t('new_non'))}** | **{fmt(t('new_cash'))}** "
-            f"| **{fmt(t('other') + t('new_cash'))}** | **{fmt(t('div_int'))}** "
-            f"| **{fmt(t('fees'))}** | **{fmt(t('dcash'))}** | **{fmt(t('pp'))}** |")
-        if has_tr:
-            line += f" **{fmt(t('treasury'))}** |"
-        lines.append(line)
+            lines.append(f"| {r['month']} | "
+                         + " | ".join(fmt(r[k]) for k, _ in COLS) + " |")
+        lines.append("| **Total** | "
+                     + " | ".join(f"**{fmt(t(k))}**" for k, _ in COLS)
+                     + " |")
         lines.append("")
     return "\n".join(lines)
 
@@ -306,8 +260,8 @@ def main():
         else:
             i += 1
     repo = repo or default_repo_dir()
-    rows, last_month, rollovers = compute(repo, cache_dir)
-    md = render(rows, last_month, rollovers)
+    rows, last_month = compute(repo, cache_dir)
+    md = render(rows, last_month)
     if out_path:
         with open(out_path, "w") as f:
             f.write(md)
