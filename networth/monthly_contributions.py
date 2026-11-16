@@ -20,6 +20,11 @@ Two views of the same money, reconciled column by column:
                            investment accounts but was still uninvested
                            cash at month-end; negative = cash drawn down)
 
+A memo column also tracks US Treasury purchases (net of sales and
+redemptions), merging I Bonds at TreasuryDirect with Treasury bonds
+held at Fidelity. It is not new money: both parts were already counted
+when the cash entered the accounts.
+
 All inputs are read fresh from the finance-data repo on every run.
 
 Usage:
@@ -42,6 +47,15 @@ K401 = {
     "Mangal-Empower", "Manju-Milliman401K", "Manju-MillimanRoth401K",
     "Manju-MutualsOfOmaha", "Manju-Principal",
 }
+TREASURY_DIRECT = {"Mangal-Treasury", "Manju-Treasury"}
+
+
+def is_treasury(t):
+    # US Treasury CUSIPs all start with 912; the key is ISIN else ticker.
+    key = t.get("key") or ""
+    return key.startswith("US912") or key.startswith("912")
+
+
 FLOW_TYPES = {"Transfer (Inbound)", "Transfer (Outbound)", "Deposit",
               "Removal", "Withdrawal"}
 FIRST_MONTH = "2018-01"
@@ -127,9 +141,14 @@ def compute(repo, cache_dir):
     prev_cash = cash_usd
     for m in months:
         new_cash = other_dep = div_int = fees = pp_inv = 0.0
-        new_401k = new_non = 0.0
+        new_401k = new_non = treasury = 0.0
         for t in by_month.get(m, []):
             v = usd(t)
+            if t["acct"] in TREASURY_DIRECT:
+                if t["typ"] in FLOW_TYPES:
+                    treasury += v  # I Bond purchase / redemption
+            elif t["typ"] in ("Buy", "Sell") and is_treasury(t):
+                treasury += -v  # Treasury bond bought / sold at a broker
             if t["acct"] in INVEST:
                 cash_usd += v
                 if t["typ"] in FLOW_TYPES:
@@ -150,6 +169,7 @@ def compute(repo, cache_dir):
         rows.append({
             "month": m, "other": other_dep, "new_cash": new_cash,
             "new_401k": new_401k, "new_non": new_non,
+            "treasury": treasury,
             "div_int": div_int, "fees": fees, "pp": pp_inv,
             "dcash": cash_usd - prev_cash,
         })
@@ -185,6 +205,12 @@ def render(rows, last_month, rollovers=()):
                  "rollovers are excluded from both columns: they move "
                  "existing money between buckets, they are not new money.")
     lines.append("- **Total new money**: the month's true contributions.")
+    lines.append("- **Treasury purchases (net)**: US Treasury buying with "
+                 "I Bonds and bonds merged — deposits minus redemptions in "
+                 "the two TreasuryDirect accounts, plus Treasury bonds "
+                 "bought minus sold at Fidelity (the 2044 and 2045 bonds). "
+                 "Memo column, not new money: it was already counted when "
+                 "the cash entered those accounts.")
     lines.append("- **Cash build-up**: money that arrived in the investment "
                  "accounts but was still uninvested cash at month-end "
                  "(negative = earlier cash was drawn down and invested).")
@@ -198,21 +224,23 @@ def render(rows, last_month, rollovers=()):
     lines.append("| Year | Other deposits | New cash to 401(k) | New cash "
                  "to other investments | New cash to investments | Total "
                  "new money | Dividends & interest | Fees | Cash build-up | "
-                 "PP new investments |")
-    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+                 "PP new investments | Treasury purchases (net) |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for y in years:
         ys = [r for r in rows if r["month"].startswith(y)]
         s = lambda k: sum(r[k] for r in ys)
         lines.append(f"| {y} | {fmt(s('other'))} | {fmt(s('new_401k'))} | "
                      f"{fmt(s('new_non'))} | {fmt(s('new_cash'))} | "
                      f"{fmt(s('other') + s('new_cash'))} | {fmt(s('div_int'))} "
-                     f"| {fmt(s('fees'))} | {fmt(s('dcash'))} | {fmt(s('pp'))} |")
+                     f"| {fmt(s('fees'))} | {fmt(s('dcash'))} | {fmt(s('pp'))} "
+                     f"| {fmt(s('treasury'))} |")
     s = lambda k: sum(r[k] for r in rows)
     lines.append(f"| **All** | **{fmt(s('other'))}** | **{fmt(s('new_401k'))}** "
                  f"| **{fmt(s('new_non'))}** | **{fmt(s('new_cash'))}** "
                  f"| **{fmt(s('other') + s('new_cash'))}** | "
                  f"**{fmt(s('div_int'))}** | **{fmt(s('fees'))}** | "
-                 f"**{fmt(s('dcash'))}** | **{fmt(s('pp'))}** |")
+                 f"**{fmt(s('dcash'))}** | **{fmt(s('pp'))}** | "
+                 f"**{fmt(s('treasury'))}** |")
     lines.append("")
     if rollovers:
         lines.append("Rollovers excluded from the 401(k) / other split "
@@ -224,26 +252,40 @@ def render(rows, last_month, rollovers=()):
         lines.append("")
 
     for y in years:
+        ys = [r for r in rows if r["month"].startswith(y)]
+        t = lambda k: sum(r[k] for r in ys)
+        # The Treasury column appears in a year's monthly table only if
+        # that year actually had Treasury purchases or sales.
+        has_tr = abs(t("treasury")) > 0.5
         lines.append(f"## {y}")
         lines.append("")
-        lines.append("| Month | Other deposits | To 401(k) | To other "
-                     "investments | New cash to investments | "
-                     "Total new money | + Dividends & interest | − Fees | "
-                     "− Cash build-up | = PP new investments |")
-        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
-        for r in [r for r in rows if r["month"].startswith(y)]:
-            lines.append(
+        hdr = ("| Month | Other deposits | To 401(k) | To other "
+               "investments | New cash to investments | "
+               "Total new money | + Dividends & interest | − Fees | "
+               "− Cash build-up | = PP new investments |")
+        sep = "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+        if has_tr:
+            hdr += " Treasury purchases (net) |"
+            sep += "---:|"
+        lines.append(hdr)
+        lines.append(sep)
+        for r in ys:
+            line = (
                 f"| {r['month']} | {fmt(r['other'])} | {fmt(r['new_401k'])} | "
                 f"{fmt(r['new_non'])} | {fmt(r['new_cash'])} | "
                 f"{fmt(r['other'] + r['new_cash'])} | {fmt(r['div_int'])} | "
                 f"{fmt(r['fees'])} | {fmt(r['dcash'])} | {fmt(r['pp'])} |")
-        ys = [r for r in rows if r["month"].startswith(y)]
-        t = lambda k: sum(r[k] for r in ys)
-        lines.append(
+            if has_tr:
+                line += f" {fmt(r['treasury'])} |"
+            lines.append(line)
+        line = (
             f"| **Total** | **{fmt(t('other'))}** | **{fmt(t('new_401k'))}** "
             f"| **{fmt(t('new_non'))}** | **{fmt(t('new_cash'))}** "
             f"| **{fmt(t('other') + t('new_cash'))}** | **{fmt(t('div_int'))}** "
             f"| **{fmt(t('fees'))}** | **{fmt(t('dcash'))}** | **{fmt(t('pp'))}** |")
+        if has_tr:
+            line += f" **{fmt(t('treasury'))}** |"
+        lines.append(line)
         lines.append("")
     return "\n".join(lines)
 
